@@ -65,6 +65,8 @@ void setup() {
 
   if (modem.isGprsConnected()) { SerialMon.println("GPRS connected"); }
 
+  if (modem.enableGPS()) { SerialMon.println("GPS conectado também"); }
+  
   //SerialAT.println("AT+CIPGSMLOC=2,1");
 
   // Inicialize o sensor DHT
@@ -79,14 +81,14 @@ void loop() {
     if (!http_client.connected()) {
       SerialMon.println();
       http_client.stop(); // Shutdown
-      SerialMon.println("HTTP  not connect");
+      SerialMon.println("HTTP not connect");
       break;
     } else {
-      GetFirebase("PATCH", FIREBASE_PATH, &http_client);
+      //GetFirebase("PATCH", FIREBASE_PATH, &http_client);
     }
 
     orquestrador();
-    delay(8 * 60 * 1000); // Atraso de 5 minutos
+    delay(3 * 60 * 1000); // Atraso de 5 minutos
   }
 }
 
@@ -95,10 +97,20 @@ void orquestrador(){
   String dataHoraAtual = getDateTime();
   String dadosGps = obterLocalizacaoGps();
 
-  SerialMon.print("dadosGps: " + dadosGps + "%\n");
+  SerialMon.print("=========== dadosGps: " + dadosGps + "\n");
   
   float temper = dht.readTemperature();
   float humid = dht.readHumidity();
+
+  if(isnan(temper)){
+    temper = 0.1;
+    humid = 0.1;
+  }
+
+  SerialMon.print(" TEMPERATURA: ");
+  SerialMon.print(temper);
+  SerialMon.print(" humid: ");
+  SerialMon.print(humid);
 
   String* statusBateria = obterStatusBateria();
   String nivelBateria = statusBateria[0];
@@ -110,7 +122,7 @@ void orquestrador(){
 
 
   // Crie um objeto JSON para armazenar os dados
-  StaticJsonBuffer<200> jsonBuffer; // Especifique o tamanho do buffer conforme necessário
+  StaticJsonBuffer<300> jsonBuffer; // Especifique o tamanho do buffer conforme necessário
   JsonObject& root = jsonBuffer.createObject();
 
   // Adicione os dados ao objeto JSON
@@ -121,8 +133,27 @@ void orquestrador(){
   root["voltagemBateria"] = voltagemBateria;
   root["qualidadeSinalGprs"] = qualidadeSinalGprs;
   root["classificacaoSinal"] = classificacaoSinal;
-  root["localizacao"] = dadosGps;
+  //root["localizacao"] = dadosGps;
   
+
+// Imprima a string JSON 'dadosGps' antes de analisar
+SerialMon.println("String dadosGps:");
+SerialMon.println(dadosGps);
+
+// Converta a string 'dadosGps' para um buffer estático
+char buffer[dadosGps.length() + 1];
+dadosGps.toCharArray(buffer, sizeof(buffer));
+
+// Parse o buffer JSON para um objeto JSON 'localizacao'
+StaticJsonBuffer<200> jsonBuffer3;
+JsonObject& localizacao = jsonBuffer3.parseObject(buffer);
+
+if (!localizacao.success()) {
+  SerialMon.println("Falha ao analisar dadosGps como JSON");
+} else {
+  root["localizacao"] = localizacao;
+}
+
 
   // Converta o objeto JSON em uma string
   String dados;
@@ -143,22 +174,94 @@ void orquestrador(){
 }
 
 String obterLocalizacaoGps() {
+
+  float gps_latitude  = 0;
+  float gps_longitude = 0;
+  float gps_speed     = 0;
+  float gps_altitude  = 0;
+  int   gps_vsat      = 0;
+  int   gps_usat      = 0;
+  float gps_accuracy  = 0;
+  int   gps_year      = 0;
+  int   gps_month     = 0;
+  int   gps_day       = 0;
+  int   gps_hour      = 0;
+  int   gps_minute    = 0;
+  int   gps_second    = 0;
+  
+  // Crie um objeto JSON para armazenar os dados
+  StaticJsonBuffer<200> jsonBuffer1; // Especifique o tamanho do buffer conforme necessário
+  JsonObject& locationObj = jsonBuffer1.createObject();
+  String dados1;
+
+  // tentar por 5 vezes
+  for (int8_t i = 5; i; i--) {
+    SerialMon.println("Requesting current GPS/GNSS/GLONASS location");
+    if (modem.getGPS(&gps_latitude, &gps_longitude, &gps_speed, &gps_altitude,
+                     &gps_vsat, &gps_usat, &gps_accuracy, &gps_year, &gps_month,
+                     &gps_day, &gps_hour, &gps_minute, &gps_second)) {
+
+      // Adicione os dados ao objeto JSON
+      locationObj["Latitude"] = String(gps_latitude, 8);
+      locationObj["Longitude"] = String(gps_longitude, 8);
+      locationObj["Speed"] = gps_speed;
+      locationObj["Altitude"] = gps_altitude;
+      locationObj["VisibleSatellites"] = gps_vsat;
+      locationObj["UsedSatellites"] = gps_usat;
+      locationObj["Accuracy"] = gps_accuracy;
+      locationObj["Year"] = gps_year;
+      locationObj["Month"] = gps_month;
+      locationObj["Day"] = gps_day;
+      locationObj["Hour"] = gps_hour;
+      locationObj["Minute"] = gps_minute;
+      locationObj["Second"] = gps_second;
+      
+      break;
+    } else {
+      SerialMon.println("Couldn't get GPS/GNSS/GLONASS location, retrying in 15s.");
+      delay(15000L);
+    }
+  }
+
+  // SerialMon.println("Retrieving GPS/GNSS/GLONASS location again as a string");
+  // String gps_raw = modem.getGPSraw();
+
+  //SerialMon.println(gps_raw);
+
+
+
+  // Converta o objeto JSON em uma string
+  locationObj.printTo(dados1);
+  SerialMon.print(dados1);
+
+  return dados1;
+/*
+  String response = "";
   // Ativar o GPS
   SerialAT.println("AT+CGNSPWR=1");
   delay(1000);
 
-  // Solicitar os dados de localização
-  SerialAT.println("AT+CGNSINF");
-  delay(1000);
-
-  String response = "";
   while (SerialAT.available()) {
     char c = SerialAT.read();
     response += c;
   }
 
   // Imprimir a resposta para debug
-  SerialMon.println("Resposta GPS SIM808:");
+  SerialMon.println("Resposta GPS SIM808 1 (AT+CGNSPWR=1):");
+  SerialMon.println(response);
+
+  // Solicitar os dados de localização
+  SerialAT.println("AT+CGNSINF");
+  delay(1000);
+
+  while (SerialAT.available()) {
+    char c = SerialAT.read();
+    response += c;
+  }
+
+
+  // Imprimir a resposta para debug
+  SerialMon.println("Resposta GPS SIM808 2 (AT+CGNSINF):");
   SerialMon.println(response);
 
   // Verificar se a resposta contém os dados de localização
@@ -170,6 +273,8 @@ String obterLocalizacaoGps() {
     SerialMon.println("Erro: Dados de localização não encontrados na resposta.");
     return ""; // Retorna uma string vazia
   }
+
+  */
 }
 
 
