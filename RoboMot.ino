@@ -1,6 +1,6 @@
 #define TINY_GSM_MODEM_SIM808  // Use this line to select the SIM808 modem
 #include <TinyGsmClient.h>
-#include <ArduinoJson.h>
+#include <ArduinoJson.h>       //versão: 5.13.4 - by Benoit Blanchon
 #include <ArduinoHttpClient.h>
 #include "DHT.h"
 
@@ -73,31 +73,33 @@ void setup() {
   dht.begin();
 }
 
-void loop() {
+void loop() {if (!modem.isGprsConnected()) {
+    SerialMon.println("GPRS disconnected, reconnecting...");
+    modem.gprsConnect(apn, gprsUser, gprsPass);
+    delay(5000);
+  }
 
-  http_client.connect(FIREBASE_HOST, SSL_PORT);
- 
-  while (true) {
-    if (!http_client.connected()) {
-      SerialMon.println();
-      http_client.stop(); // Shutdown
-      SerialMon.println("HTTP not connect");
-      break;
-    } else {
-      //GetFirebase("PATCH", FIREBASE_PATH, &http_client);
-    }
+  if (!http_client.connected()) {
+    SerialMon.println("Establishing new HTTP connection...");
+    http_client.connect(FIREBASE_HOST, SSL_PORT);
+    delay(1000);
+  }
 
+  if (http_client.connected()) {
     orquestrador();
-    delay(3 * 60 * 1000); // Atraso de 5 minutos
+    delay(3 * 60 * 1000); // 3 minute delay
+  } else {
+    SerialMon.println("Failed to connect, retrying in 10 seconds...");
+    http_client.stop();
+    delay(10000);
   }
 }
 
-void orquestrador(){
+//retornar um array de temper e humid
 
-  String dataHoraAtual = getDateTime();
-  String dadosGps = obterLocalizacaoGps();
-
-  SerialMon.print("=========== dadosGps: " + dadosGps + "\n");
+String* obterTemperaturaHumdidade(){
+  // Criar um array de strings para armazenar os parâmetros divididos
+  String* param = new String[2];
   
   float temper = dht.readTemperature();
   float humid = dht.readHumidity();
@@ -106,12 +108,25 @@ void orquestrador(){
     temper = 0.1;
     humid = 0.1;
   }
+  
+  param[0] = String(temper);
+  param[1] = String(humid);
 
   SerialMon.print(" TEMPERATURA: ");
   SerialMon.print(temper);
   SerialMon.print(" humid: ");
   SerialMon.print(humid);
 
+  return param;
+}
+
+void orquestrador(){
+  String* tempHumid = obterTemperaturaHumdidade();
+  String dataHoraAtual = getDateTime();
+  String dadosGps = obterLocalizacaoGps();
+
+  SerialMon.print("=========== dadosGps: " + dadosGps + "\n");
+  
   String* statusBateria = obterStatusBateria();
   String nivelBateria = statusBateria[0];
   String voltagemBateria = statusBateria[1];
@@ -127,8 +142,8 @@ void orquestrador(){
 
   // Adicione os dados ao objeto JSON
   root["ultimaAtualizacao"] = dataHoraAtual;
-  root["temperatura"] = temper;
-  root["humidade"] = humid;
+  root["temperatura"] = tempHumid[0];
+  root["humidade"] = tempHumid[1];
   root["nivelBateria"] = nivelBateria;
   root["voltagemBateria"] = voltagemBateria;
   root["qualidadeSinalGprs"] = qualidadeSinalGprs;
@@ -235,46 +250,6 @@ String obterLocalizacaoGps() {
   SerialMon.print(dados1);
 
   return dados1;
-/*
-  String response = "";
-  // Ativar o GPS
-  SerialAT.println("AT+CGNSPWR=1");
-  delay(1000);
-
-  while (SerialAT.available()) {
-    char c = SerialAT.read();
-    response += c;
-  }
-
-  // Imprimir a resposta para debug
-  SerialMon.println("Resposta GPS SIM808 1 (AT+CGNSPWR=1):");
-  SerialMon.println(response);
-
-  // Solicitar os dados de localização
-  SerialAT.println("AT+CGNSINF");
-  delay(1000);
-
-  while (SerialAT.available()) {
-    char c = SerialAT.read();
-    response += c;
-  }
-
-
-  // Imprimir a resposta para debug
-  SerialMon.println("Resposta GPS SIM808 2 (AT+CGNSINF):");
-  SerialMon.println(response);
-
-  // Verificar se a resposta contém os dados de localização
-  if (response.startsWith("+CGNSINF:")) {
-    // Retorna os dados de localização
-    return response;
-  } else {
-    // Se os dados de localização não forem encontrados, imprime uma mensagem de erro
-    SerialMon.println("Erro: Dados de localização não encontrados na resposta.");
-    return ""; // Retorna uma string vazia
-  }
-
-  */
 }
 
 
@@ -410,33 +385,39 @@ void GetFirebase(const char* method, const String & path ,  HttpClient* http) {
 void SetFirebase(const char* method, const String & path , const String & data, HttpClient* http) {
   String response;
   int statusCode = 0;
-  http->connectionKeepAlive(); // Currently, this is needed for HTTPS
- 
-  String url;
-  if (path[0] != '/') {
-    url = "/";
-  }
-  url += path + ".json";
-  url += "?auth=" + FIREBASE_AUTH;
+  int retries = 3;
 
-  http->post(url, "application/json", data);
- 
-  // Verifique o status da resposta
-  statusCode = http->responseStatusCode();
-  SerialMon.print("Status code: ");
-  SerialMon.println(statusCode);
-  
-  // Obtenha a resposta do servidor
-  response = http->responseBody();
-  SerialMon.print("Response: ");
-  SerialMon.println(response);
+  while (retries > 0) {
+    if (!http->connected()) {
+      SerialMon.println("Reconnecting HTTP...");
+      http->connect(FIREBASE_HOST, SSL_PORT);
+      delay(1000);
+    }
 
-  // Verifique se a conexão foi encerrada
-  if (!http->connected()) {
-    SerialMon.println();
-    http->stop(); // Encerre a conexão
-    SerialMon.println("HTTP POST disconnected");
+    if (http->connected()) {
+      String url = path[0] != '/' ? "/" : "";
+      url += path + ".json?auth=" + FIREBASE_AUTH;
+
+      http->post(url, "application/json", data);
+      statusCode = http->responseStatusCode();
+      
+      SerialMon.print("Status code: ");
+      SerialMon.println(statusCode);
+      
+      if (statusCode > 0) {
+        response = http->responseBody();
+        SerialMon.print("Response: ");
+        SerialMon.println(response);
+        break;
+      }
+    }
+    
+    retries--;
+    if (retries > 0) {
+      SerialMon.println("Retrying...");
+      delay(5000);
+    }
   }
+
+  http->stop();
 }
-
- 
